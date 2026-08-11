@@ -12,11 +12,10 @@ API_ID = int(os.getenv("API_ID", "1234567"))
 API_HASH = os.getenv("API_HASH", "YOUR_API_HASH")
 MONGO_URI = os.getenv("MONGO_URI", "YOUR_MONGO_URI")
 
-# Channel IDs
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "-100123456789"))
 SOURCE_CHANNEL_ID = int(os.getenv("SOURCE_CHANNEL_ID", "-100987654321"))
 STORE_UPI_ID = os.getenv("STORE_UPI_ID", "6398324472@fam")
-PORT = int(os.getenv("PORT", 8080)) # Web Server Port for Hosting Platform
+PORT = int(os.getenv("PORT", 8080))
 
 # Database Setup
 mongo_client = MongoClient(MONGO_URI)
@@ -27,28 +26,87 @@ orders_col = db["orders"]
 
 app = Client("vj_post_search_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- 0. DUMMY HTTP SERVER FOR PORT BINDING & HEALTH CHECKS ---
+# --- 0. HTTP SERVER FOR PORT BINDING ---
 async def handle_ping(request):
     return web.Response(text="Bot is Live and Running 24/7!")
 
 routes = [web.get('/', handle_ping), web.get('/health', handle_ping)]
 
+# --- 1. LANGUAGE DICTIONARY ---
+TEXTS = {
+    "hi": {
+        "welcome": "❖ **VJ POST SEARCH BOT** ❖\n\n👋 **नमस्ते {name}!**\nऑडियो स्टोरीज और कंटेंट ब्राउज़ करने के लिए नीचे दिए गए बटनों का उपयोग करें:",
+        "btn_catalog": "💎 स्टोरीज कैटलॉग",
+        "btn_library": "🛒 मेरी लाइब्रेरी",
+        "btn_lang": "🌐 भाषा बदलें (Language)",
+        "lang_select": "🌐 **अपनी भाषा चुनें / Select Your Language:**",
+        "lang_changed": "✅ **भाषा बदलकर हिंदी कर दी गई है!**",
+        "no_stories": "अभी कोई सामग्री उपलब्ध नहीं है।",
+        "catalog_title": "📖 **उपलब्ध कैटलॉग:**\nअपनी पसंदीदा स्टोरी पर क्लिक करें:",
+        "btn_prev": "⬅️ पिछला",
+        "btn_next": "अगला ➡️",
+        "not_in_db": "❌ **यह स्टोरी डेटाबेस में उपलब्ध नहीं है।**",
+        "unlocked_msg": "\n✅ **आप इसे अनलॉक कर चुके हैं!**",
+        "btn_listen": "▶️ अभी सुनें / फाइल देखें",
+        "btn_buy": "💳 अभी खरीदें (Buy Now)",
+        "btn_back_cat": "🔙 कैटलॉग पर जाएं",
+        "pay_instruct": "💳 **पेमेंट निर्देश:**\n\n📖 **स्टोरी:** {title}\n💰 **राशि:** ₹{price}\n🔹 **UPI ID:** `{upi}`\n\n1️⃣ ऊपर दिए गए UPI ID पर भुगतान करें।\n2️⃣ भुगतान के बाद **12-अंकों का UTR/Ref No.** नीचे दिए गए तरीके से भेजें:\n\n`/utr {id} <आपका_12_अंकों_का_UTR>`",
+        "btn_cancel": "🔙 रद्द करें",
+        "utr_invalid_format": "❌ **गलत फ़ॉर्मेट!**\nसही तरीका: `/utr <story_id> <utr_number>`",
+        "utr_invalid_len": "❌ **अमान्य UTR!** UTR नंबर 12 अंकों का होना चाहिए।",
+        "utr_exists": "⚠️ यह UTR नंबर पहले ही सबमिट किया जा चुका है!",
+        "invalid_story_id": "❌ अमान्य Story ID!",
+        "utr_submitted": "✅ **आपका UTR सत्यापन के लिए भेज दिया गया है!**\nस्वीकृति मिलते ही स्टोरी अपने आप अनलॉक हो जाएगी।",
+        "my_lib_empty": "आपकी लाइब्रेरी खाली है।",
+        "my_lib_title": "🎧 **आपकी अनलॉक्ड स्टोरीज:**"
+    },
+    "en": {
+        "welcome": "❖ **VJ POST SEARCH BOT** ❖\n\n👋 **Hello {name}!**\nUse the buttons below to browse audio stories and content:",
+        "btn_catalog": "💎 Stories Catalog",
+        "btn_library": "🛒 My Library",
+        "btn_lang": "🌐 Change Language",
+        "lang_select": "🌐 **Select Your Language / अपनी भाषा चुनें:**",
+        "lang_changed": "✅ **Language changed to English successfully!**",
+        "no_stories": "No content available right now.",
+        "catalog_title": "📖 **Available Catalog:**\nClick on your favorite story:",
+        "btn_prev": "⬅️ Previous",
+        "btn_next": "Next ➡️",
+        "not_in_db": "❌ **This story is not available in the database.**",
+        "unlocked_msg": "\n✅ **You have already unlocked this!**",
+        "btn_listen": "▶️ Listen Now / View File",
+        "btn_buy": "💳 Buy Now",
+        "btn_back_cat": "🔙 Back to Catalog",
+        "pay_instruct": "💳 **Payment Instructions:**\n\n📖 **Story:** {title}\n💰 **Price:** ₹{price}\n🔹 **UPI ID:** `{upi}`\n\n1️⃣ Pay to the UPI ID provided above.\n2️⃣ After payment, send the **12-digit UTR/Ref No.** in this format:\n\n`/utr {id} <your_12_digit_utr>`",
+        "btn_cancel": "🔙 Cancel",
+        "utr_invalid_format": "❌ **Wrong Format!**\nCorrect format: `/utr <story_id> <utr_number>`",
+        "utr_invalid_len": "❌ **Invalid UTR!** UTR number must be exactly 12 digits.",
+        "utr_exists": "⚠️ This UTR number has already been submitted!",
+        "invalid_story_id": "❌ Invalid Story ID!",
+        "utr_submitted": "✅ **Your UTR has been sent for verification!**\nThe story will be unlocked automatically upon approval.",
+        "my_lib_empty": "Your library is empty.",
+        "my_lib_title": "🎧 **Your Unlocked Stories:**"
+    }
+}
+
 # --- HELPER FUNCTIONS ---
 def get_or_create_user(user_id):
     user = users_col.find_one({"userId": user_id})
     if not user:
-        user = {"userId": user_id, "cart": [], "purchasedStories": []}
+        user = {"userId": user_id, "lang": "hi", "cart": [], "purchasedStories": []}
         users_col.insert_one(user)
     return user
 
-# --- 1. AUTO-INDUCTION (चैनल से ऑटोमैटिक टाइटल इंडेक्सिंग) ---
+def get_user_lang(user_id):
+    user = get_or_create_user(user_id)
+    return user.get("lang", "hi")
+
+# --- 1. AUTO-INDUCTION (केवल पहली लाइन इंडेक्सिंग) ---
 @app.on_message(filters.chat(SOURCE_CHANNEL_ID) & (filters.document | filters.video | filters.audio | filters.text))
 async def auto_induction_handler(client: Client, message: Message):
     caption = message.caption or message.text
     if not caption:
         return
 
-    # नियम के अनुसार केवल कैप्शन की पहली लाइन ही टाइटल बनेगी
     first_line_title = caption.split("\n")[0].strip()
     story_id = str(message.id)
 
@@ -65,11 +123,12 @@ async def auto_induction_handler(client: Client, message: Message):
         upsert=True
     )
 
-# --- 2. START & SEARCH HANDLER ---
+# --- 2. START & MAIN MENU HANDLER ---
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
     user_id = message.from_user.id
-    get_or_create_user(user_id)
+    lang = get_user_lang(user_id)
+    t = TEXTS[lang]
 
     args = message.text.split(maxsplit=1)
 
@@ -78,19 +137,56 @@ async def start_handler(client: Client, message: Message):
         await send_story_details(message.chat.id, raw_id)
     else:
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💎 स्टोरीज कैटलॉग", callback_data="catalog_1")],
-            [InlineKeyboardButton("🛒 मेरी लाइब्रेरी", callback_data="my_library")]
+            [InlineKeyboardButton(t["btn_catalog"], callback_data="catalog_1")],
+            [InlineKeyboardButton(t["btn_library"], callback_data="my_library")],
+            [InlineKeyboardButton(t["btn_lang"], callback_data="select_language")]
         ])
         await message.reply_text(
-            f"❖ **VJ POST SEARCH BOT** ❖\n\n"
-            f"👋 **नमस्ते {message.from_user.first_name}!**\n"
-            f"ऑडियो स्टोरीज और कंटेंट ब्राउज़ करने के लिए नीचे दिए गए बटनों का उपयोग करें:",
+            t["welcome"].format(name=message.from_user.first_name),
             reply_markup=keyboard
         )
 
-# --- 3. CATALOG & PAGINATION ---
+# --- 3. LANGUAGE SELECTION HANDLERS ---
+@app.on_callback_query(filters.regex(r"^select_language$"))
+async def select_language_callback(client: Client, callback: CallbackQuery):
+    lang = get_user_lang(callback.from_user.id)
+    t = TEXTS[lang]
+    
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🇮🇳 हिंदी", callback_data="set_lang_hi"),
+            InlineKeyboardButton("🇬🇧 English", callback_data="set_lang_en")
+        ],
+        [InlineKeyboardButton(t["btn_back_cat"], callback_data="catalog_1")]
+    ])
+    await callback.message.edit_text(t["lang_select"], reply_markup=keyboard)
+
+@app.on_callback_query(filters.regex(r"^set_lang_(hi|en)$"))
+async def set_language_callback(client: Client, callback: CallbackQuery):
+    new_lang = callback.matches[0].group(1)
+    user_id = callback.from_user.id
+
+    users_col.update_one({"userId": user_id}, {"$set": {"lang": new_lang}}, upsert=True)
+    t = TEXTS[new_lang]
+
+    await callback.answer(t["lang_changed"], show_alert=True)
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(t["btn_catalog"], callback_data="catalog_1")],
+        [InlineKeyboardButton(t["btn_library"], callback_data="my_library")],
+        [InlineKeyboardButton(t["btn_lang"], callback_data="select_language")]
+    ])
+    await callback.message.edit_text(
+        t["welcome"].format(name=callback.from_user.first_name),
+        reply_markup=keyboard
+    )
+
+# --- 4. CATALOG & PAGINATION ---
 @app.on_callback_query(filters.regex(r"^catalog_(\d+)"))
 async def show_catalog(client: Client, callback: CallbackQuery):
+    lang = get_user_lang(callback.from_user.id)
+    t = TEXTS[lang]
+
     page = int(callback.matches[0].group(1))
     limit = 5
     skip = (page - 1) * limit
@@ -99,7 +195,7 @@ async def show_catalog(client: Client, callback: CallbackQuery):
     stories = list(stories_col.find().skip(skip).limit(limit))
 
     if not stories:
-        await callback.answer("अभी कोई सामग्री उपलब्ध नहीं है।", show_alert=True)
+        await callback.answer(t["no_stories"], show_alert=True)
         return
 
     buttons = []
@@ -108,23 +204,28 @@ async def show_catalog(client: Client, callback: CallbackQuery):
 
     nav_buttons = []
     if page > 1:
-        nav_buttons.append(InlineKeyboardButton("⬅️ पिछला", callback_data=f"catalog_{page - 1}"))
+        nav_buttons.append(InlineKeyboardButton(t["btn_prev"], callback_data=f"catalog_{page - 1}"))
     if (skip + limit) < total_stories:
-        nav_buttons.append(InlineKeyboardButton("अगला ➡️", callback_data=f"catalog_{page + 1}"))
+        nav_buttons.append(InlineKeyboardButton(t["btn_next"], callback_data=f"catalog_{page + 1}"))
 
     if nav_buttons:
         buttons.append(nav_buttons)
 
+    buttons.append([InlineKeyboardButton(t["btn_lang"], callback_data="select_language")])
+
     await callback.message.edit_text(
-        "📖 **उपलब्ध कैटलॉग:**\nअपनी पसंदीदा स्टोरी पर क्लिक करें:",
+        t["catalog_title"],
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-# --- 4. STORY DETAILS & PURCHASE CHECK ---
+# --- 5. STORY DETAILS ---
 async def send_story_details(chat_id, story_id, edit_message=None):
+    lang = get_user_lang(chat_id)
+    t = TEXTS[lang]
+
     story = stories_col.find_one({"id": str(story_id)})
     if not story:
-        text = "❌ **यह स्टोरी डेटाबेस में उपलब्ध नहीं है।**"
+        text = t["not_in_db"]
         if edit_message: await edit_message.edit_text(text)
         else: await app.send_message(chat_id, text)
         return
@@ -134,20 +235,20 @@ async def send_story_details(chat_id, story_id, edit_message=None):
 
     caption = (
         f"🎧 **{story.get('title', 'Untitled')}**\n\n"
-        f"💰 **मूल्य:** ₹{story.get('price', 49)}\n"
+        f"💰 **Price / मूल्य:** ₹{story.get('price', 49)}\n"
         f"🆔 **ID:** `{story['id']}`\n"
     )
 
     if is_purchased:
-        caption += "\n✅ **आप इसे अनलॉक कर चुके हैं!**"
+        caption += t["unlocked_msg"]
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("▶️ अभी सुनें / फाइल देखें", callback_data=f"getfile_{story['id']}")],
-            [InlineKeyboardButton("🔙 कैटलॉग पर जाएं", callback_data="catalog_1")]
+            [InlineKeyboardButton(t["btn_listen"], callback_data=f"getfile_{story['id']}")],
+            [InlineKeyboardButton(t["btn_back_cat"], callback_data="catalog_1")]
         ])
     else:
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💳 अभी खरीदें (Buy Now)", callback_data=f"buy_{story['id']}")],
-            [InlineKeyboardButton("🔙 कैटलॉग पर जाएं", callback_data="catalog_1")]
+            [InlineKeyboardButton(t["btn_buy"], callback_data=f"buy_{story['id']}")],
+            [InlineKeyboardButton(t["btn_back_cat"], callback_data="catalog_1")]
         ])
 
     if edit_message:
@@ -160,56 +261,59 @@ async def story_callback(client: Client, callback: CallbackQuery):
     story_id = callback.matches[0].group(1)
     await send_story_details(callback.message.chat.id, story_id, edit_message=callback.message)
 
-# --- 5. BUY & UPI PAYMENT INSTRUCTIONS ---
+# --- 6. BUY & UPI PAYMENT ---
 @app.on_callback_query(filters.regex(r"^buy_(.+)"))
 async def buy_story_callback(client: Client, callback: CallbackQuery):
+    lang = get_user_lang(callback.from_user.id)
+    t = TEXTS[lang]
+
     story_id = callback.matches[0].group(1)
     story = stories_col.find_one({"id": str(story_id)})
 
     if not story:
-        await callback.answer("स्टोरी नहीं मिली!", show_alert=True)
+        await callback.answer(t["not_in_db"], show_alert=True)
         return
 
-    msg_text = (
-        f"💳 **पेमेंट निर्देश:**\n\n"
-        f"📖 **स्टोरी:** {story.get('title')}\n"
-        f"💰 **राशि:** ₹{story.get('price', 49)}\n"
-        f"🔹 **UPI ID:** `{STORE_UPI_ID}`\n\n"
-        f"1️⃣ ऊपर दिए गए UPI ID पर भुगतान करें।\n"
-        f"2️⃣ भुगतान के बाद **12-अंकों का UTR/Ref No.** नीचे दिए गए तरीके से भेजें:\n\n"
-        f"`/utr {story['id']} <आपका_12_अंकों_का_UTR>`"
+    msg_text = t["pay_instruct"].format(
+        title=story.get('title'),
+        price=story.get('price', 49),
+        upi=STORE_UPI_ID,
+        id=story['id']
     )
 
     await callback.message.edit_text(
         msg_text,
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 रद्द करें", callback_data=f"story_{story_id}")]
+            [InlineKeyboardButton(t["btn_cancel"], callback_data=f"story_{story_id}")]
         ])
     )
 
-# --- 6. UTR SUBMISSION & LOG CHANNEL ---
+# --- 7. UTR SUBMISSION & LOG CHANNEL ---
 @app.on_message(filters.command("utr") & filters.private)
 async def handle_utr_submit(client: Client, message: Message):
+    user = message.from_user
+    lang = get_user_lang(user.id)
+    t = TEXTS[lang]
+
     args = message.text.split()
     if len(args) < 3:
-        await message.reply_text("❌ **गलत फ़ॉर्मेट!**\nसही तरीका: `/utr <story_id> <utr_number>`")
+        await message.reply_text(t["utr_invalid_format"])
         return
 
     story_id = args[1].strip()
     utr = args[2].strip()
-    user = message.from_user
 
     if not re.match(r"^\d{12}$", utr):
-        await message.reply_text("❌ **अमान्य UTR!** UTR नंबर 12 अंकों का होना चाहिए।")
+        await message.reply_text(t["utr_invalid_len"])
         return
 
     if orders_col.find_one({"utr": utr}):
-        await message.reply_text("⚠️ यह UTR नंबर पहले ही सबमिट किया जा चुका है!")
+        await message.reply_text(t["utr_exists"])
         return
 
     story = stories_col.find_one({"id": str(story_id)})
     if not story:
-        await message.reply_text("❌ अमान्य Story ID!")
+        await message.reply_text(t["invalid_story_id"])
         return
 
     order_doc = {
@@ -224,13 +328,13 @@ async def handle_utr_submit(client: Client, message: Message):
     }
     orders_col.insert_one(order_doc)
 
-    await message.reply_text("✅ **आपका UTR सत्यापन के लिए भेज दिया गया है!**\nस्वीकृति मिलते ही स्टोरी अपने आप अनलॉक हो जाएगी।")
+    await message.reply_text(t["utr_submitted"])
 
     log_msg = (
-        f"💳 **नया पेमेंट वेरिफिकेशन अलर्ट!**\n\n"
-        f"👤 **यूजर:** {order_doc['username']} (`{user.id}`)\n"
-        f"📖 **स्टोरी:** {story.get('title')}\n"
-        f"💰 **राशि:** ₹{story.get('price', 49)}\n"
+        f"💳 **New Payment Verification Alert!**\n\n"
+        f"👤 **User:** {order_doc['username']} (`{user.id}`)\n"
+        f"📖 **Story:** {story.get('title')}\n"
+        f"💰 **Amount:** ₹{story.get('price', 49)}\n"
         f"🔢 **UTR:** `{utr}`"
     )
     keyboard = InlineKeyboardMarkup([
@@ -241,7 +345,7 @@ async def handle_utr_submit(client: Client, message: Message):
     ])
     await client.send_message(LOG_CHANNEL_ID, log_msg, reply_markup=keyboard)
 
-# --- 7. ADMIN APPROVAL HANDLER ---
+# --- 8. ADMIN APPROVAL HANDLER ---
 @app.on_callback_query(filters.regex(r"^(appr|rej)_(.+)"))
 async def handle_order_approval(client: Client, callback: CallbackQuery):
     action = callback.matches[0].group(1)
@@ -249,7 +353,7 @@ async def handle_order_approval(client: Client, callback: CallbackQuery):
 
     order = orders_col.find_one({"utr": utr})
     if not order:
-        await callback.answer("ऑर्डर नहीं मिला!", show_alert=True)
+        await callback.answer("Order not found!", show_alert=True)
         return
 
     if action == "appr":
@@ -257,28 +361,31 @@ async def handle_order_approval(client: Client, callback: CallbackQuery):
         users_col.update_one({"userId": order["userId"]}, {"$addToSet": {"purchasedStories": order["storyId"]}}, upsert=True)
 
         await callback.message.edit_text(f"{callback.message.text}\n\n✅ **STATUS: APPROVED**")
-        await callback.answer("सफलतापूर्वक अप्रूव किया गया!")
+        await callback.answer("Approved successfully!")
 
         try:
-            await app.send_message(
-                order["userId"],
-                f"🎉 **पेमेंट सत्यापित हो गया!**\n\nआपकी स्टोरी **{order['storyTitle']}** अनलॉक हो चुकी है।"
-            )
+            u_lang = get_user_lang(order["userId"])
+            msg = "🎉 **पेमेंट सत्यापित हो गया!**\n\nआपकी स्टोरी अनलॉक हो चुकी है।" if u_lang == "hi" else "🎉 **Payment Verified!**\n\nYour story has been unlocked."
+            await app.send_message(order["userId"], msg)
         except Exception:
             pass
     else:
         orders_col.update_one({"utr": utr}, {"$set": {"status": "Rejected"}})
         await callback.message.edit_text(f"{callback.message.text}\n\n❌ **STATUS: REJECTED**")
-        await callback.answer("रिजेक्ट किया गया!")
+        await callback.answer("Rejected!")
 
-# --- 8. MY LIBRARY ---
+# --- 9. MY LIBRARY ---
 @app.on_callback_query(filters.regex(r"^my_library$"))
 async def my_library(client: Client, callback: CallbackQuery):
-    user = get_or_create_user(callback.from_user.id)
+    user_id = callback.from_user.id
+    lang = get_user_lang(user_id)
+    t = TEXTS[lang]
+
+    user = get_or_create_user(user_id)
     purchased_ids = user.get("purchasedStories", [])
 
     if not purchased_ids:
-        await callback.answer("आपकी लाइब्रेरी खाली है।", show_alert=True)
+        await callback.answer(t["my_lib_empty"], show_alert=True)
         return
 
     stories = list(stories_col.find({"id": {"$in": purchased_ids}}))
@@ -286,24 +393,22 @@ async def my_library(client: Client, callback: CallbackQuery):
     for s in stories:
         buttons.append([InlineKeyboardButton(f"▶️ {s.get('title')}", callback_data=f"story_{s['id']}")])
 
-    buttons.append([InlineKeyboardButton("🔙 कैटलॉग", callback_data="catalog_1")])
+    buttons.append([InlineKeyboardButton(t["btn_back_cat"], callback_data="catalog_1")])
 
     await callback.message.edit_text(
-        "🎧 **आपकी अनलॉक्ड स्टोरीज:**",
+        t["my_lib_title"],
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-# --- START BOT AND HTTP SERVER TOGETHER ---
+# --- START BOT AND HTTP SERVER ---
 if __name__ == "__main__":
     web_app = web.Application()
     web_app.add_routes(routes)
     
-    # HTTP Server runner
     runner = web.AppRunner(web_app)
     app.loop.run_until_complete(runner.setup())
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     app.loop.run_until_complete(site.start())
     print(f"HTTP Server binds successfully on port {PORT}")
 
-    # Run Pyrogram Client
     app.run()
