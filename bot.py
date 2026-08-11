@@ -15,6 +15,7 @@ MONGO_URI = os.getenv("MONGO_URI", "YOUR_MONGO_URI")
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "-100123456789"))
 SOURCE_CHANNEL_ID = int(os.getenv("SOURCE_CHANNEL_ID", "-100987654321"))
 STORE_UPI_ID = os.getenv("STORE_UPI_ID", "6398324472@fam")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "5898522531")) # अपना Telegram ID यहाँ डालें
 PORT = int(os.getenv("PORT", 8080))
 
 # Database Setup
@@ -25,6 +26,9 @@ users_col = db["users"]
 orders_col = db["orders"]
 
 app = Client("vj_post_search_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# FSM State tracking for story creation
+ADD_STORY_STATES = {}
 
 # --- 0. HTTP SERVER FOR PORT BINDING ---
 async def handle_ping(request):
@@ -100,7 +104,90 @@ def get_user_lang(user_id):
     user = get_or_create_user(user_id)
     return user.get("lang", "hi")
 
-# --- 1. AUTO-INDUCTION (केवल पहली लाइन इंडेक्सिंग) ---
+# --- ADMIN: MANUAL STORY CREATOR (FSM STEP-BY-STEP) ---
+@app.on_message(filters.command("addstory") & filters.private & filters.user(ADMIN_ID))
+async def start_add_story(client: Client, message: Message):
+    user_id = message.from_user.id
+    ADD_STORY_STATES[user_id] = {"step": "TITLE", "data": {}}
+    await message.reply_text("📝 **[स्टेप 1/5]** स्टोरी का **नाम (Title)** भेजें:\n\n_(प्रोसेस रद्द करने के लिए `/cancel` टाइप करें)_")
+
+@app.on_message(filters.command("cancel") & filters.private & filters.user(ADMIN_ID))
+async def cancel_add_story(client: Client, message: Message):
+    user_id = message.from_user.id
+    if user_id in ADD_STORY_STATES:
+        del ADD_STORY_STATES[user_id]
+        await message.reply_text("🚫 **स्टोरी जोड़ने की प्रक्रिया रद्द कर दी गई है।**")
+
+@app.on_message(filters.private & filters.user(ADMIN_ID) & ~filters.command(["start", "addstory", "cancel", "utr"]))
+async def process_story_creation(client: Client, message: Message):
+    user_id = message.from_user.id
+    if user_id not in ADD_STORY_STATES:
+        return
+
+    step = ADD_STORY_STATES[user_id]["step"]
+    data = ADD_STORY_STATES[user_id]["data"]
+
+    if step == "TITLE":
+        data["title"] = message.text.strip().split("\n")[0]
+        ADD_STORY_STATES[user_id]["step"] = "DESCRIPTION"
+        await message.reply_text("📜 **[स्टेप 2/5]** अब स्टोरी का **विवरण (Description)** भेजें:")
+
+    elif step == "DESCRIPTION":
+        data["description"] = message.text.strip()
+        ADD_STORY_STATES[user_id]["step"] = "PHOTO"
+        await message.reply_text("🖼️ **[स्टेप 3/5]** स्टोरी का **फोटो (Cover Image)** भेजें:")
+
+    elif step == "PHOTO":
+        if not message.photo:
+            await message.reply_text("❌ कृपया केवल एक **फोटो** भेजें!")
+            return
+        data["photo_id"] = message.photo.file_id
+        ADD_STORY_STATES[user_id]["step"] = "HOW_TO_GET"
+        await message.reply_text("ℹ️ **[स्टेप 4/5]** स्टोरी कैसे मिलेगी? (उदा. Direct Telegram File, Private Link):")
+
+    elif step == "HOW_TO_GET":
+        data["how_to_get"] = message.text.strip()
+        ADD_STORY_STATES[user_id]["step"] = "PRICE"
+        await message.reply_text("💰 **[स्टेप 5/5]** स्टोरी का **मूल्य (Price in ₹)** दर्ज करें (केवल नंबर, उदा. 49):")
+
+    elif step == "PRICE":
+        try:
+            price = int(message.text.strip())
+        except ValueError:
+            await message.reply_text("❌ कृपया केवल अंकों में प्राइस लिखें (उदा: 49):")
+            return
+
+        data["price"] = price
+        story_id = str(int(datetime.now().timestamp()))
+        
+        # database entry
+        story_doc = {
+            "id": story_id,
+            "title": data["title"],
+            "description": data["description"],
+            "photo_id": data["photo_id"],
+            "how_to_get": data["how_to_get"],
+            "price": data["price"],
+            "created_at": datetime.now()
+        }
+        stories_col.insert_one(story_doc)
+
+        # Show final preview
+        preview_text = (
+            f"🎧 **{data['title']}**\n\n"
+            f"📜 **विवरण:** {data['description']}\n\n"
+            f"ℹ️ **कैसे मिलेगी:** {data['how_to_get']}\n"
+            f"💰 **मूल्य:** ₹{data['price']}\n"
+            f"🆔 **Story ID:** `{story_id}`"
+        )
+
+        await message.reply_photo(
+            photo=data["photo_id"],
+            caption=f"✅ **स्टोरी सफलता से ऐड कर दी गई है!**\n\n" + preview_text
+        )
+        del ADD_STORY_STATES[user_id]
+
+# --- 2. AUTO-INDUCTION (चैनल ऑटो इंडेक्सिंग) ---
 @app.on_message(filters.chat(SOURCE_CHANNEL_ID) & (filters.document | filters.video | filters.audio | filters.text))
 async def auto_induction_handler(client: Client, message: Message):
     caption = message.caption or message.text
@@ -123,7 +210,7 @@ async def auto_induction_handler(client: Client, message: Message):
         upsert=True
     )
 
-# --- 2. START & MAIN MENU HANDLER ---
+# --- 3. START & MAIN MENU HANDLER ---
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
     user_id = message.from_user.id
@@ -146,7 +233,7 @@ async def start_handler(client: Client, message: Message):
             reply_markup=keyboard
         )
 
-# --- 3. LANGUAGE SELECTION HANDLERS ---
+# --- 4. LANGUAGE SELECTION HANDLERS ---
 @app.on_callback_query(filters.regex(r"^select_language$"))
 async def select_language_callback(client: Client, callback: CallbackQuery):
     lang = get_user_lang(callback.from_user.id)
@@ -181,7 +268,7 @@ async def set_language_callback(client: Client, callback: CallbackQuery):
         reply_markup=keyboard
     )
 
-# --- 4. CATALOG & PAGINATION ---
+# --- 5. CATALOG & PAGINATION ---
 @app.on_callback_query(filters.regex(r"^catalog_(\d+)"))
 async def show_catalog(client: Client, callback: CallbackQuery):
     lang = get_user_lang(callback.from_user.id)
@@ -218,7 +305,7 @@ async def show_catalog(client: Client, callback: CallbackQuery):
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-# --- 5. STORY DETAILS ---
+# --- 6. STORY DETAILS (PHOTO + DESCRIPTION COMPATIBLE) ---
 async def send_story_details(chat_id, story_id, edit_message=None):
     lang = get_user_lang(chat_id)
     t = TEXTS[lang]
@@ -233,11 +320,13 @@ async def send_story_details(chat_id, story_id, edit_message=None):
     user = get_or_create_user(chat_id)
     is_purchased = str(story_id) in user.get("purchasedStories", [])
 
-    caption = (
-        f"🎧 **{story.get('title', 'Untitled')}**\n\n"
-        f"💰 **Price / मूल्य:** ₹{story.get('price', 49)}\n"
-        f"🆔 **ID:** `{story['id']}`\n"
-    )
+    caption = f"🎧 **{story.get('title', 'Untitled')}**\n\n"
+    if story.get("description"):
+        caption += f"📜 **विवरण:** {story['description']}\n\n"
+    if story.get("how_to_get"):
+        caption += f"ℹ️ **कैसे मिलेगी:** {story['how_to_get']}\n\n"
+        
+    caption += f"💰 **Price / मूल्य:** ₹{story.get('price', 49)}\n🆔 **ID:** `{story['id']}`\n"
 
     if is_purchased:
         caption += t["unlocked_msg"]
@@ -251,17 +340,24 @@ async def send_story_details(chat_id, story_id, edit_message=None):
             [InlineKeyboardButton(t["btn_back_cat"], callback_data="catalog_1")]
         ])
 
-    if edit_message:
-        await edit_message.edit_text(caption, reply_markup=keyboard)
+    photo_id = story.get("photo_id")
+    
+    if photo_id:
+        if edit_message:
+            await edit_message.delete()
+        await app.send_photo(chat_id, photo=photo_id, caption=caption, reply_markup=keyboard)
     else:
-        await app.send_message(chat_id, caption, reply_markup=keyboard)
+        if edit_message:
+            await edit_message.edit_text(caption, reply_markup=keyboard)
+        else:
+            await app.send_message(chat_id, caption, reply_markup=keyboard)
 
 @app.on_callback_query(filters.regex(r"^story_(.+)"))
 async def story_callback(client: Client, callback: CallbackQuery):
     story_id = callback.matches[0].group(1)
     await send_story_details(callback.message.chat.id, story_id, edit_message=callback.message)
 
-# --- 6. BUY & UPI PAYMENT ---
+# --- 7. BUY & UPI PAYMENT ---
 @app.on_callback_query(filters.regex(r"^buy_(.+)"))
 async def buy_story_callback(client: Client, callback: CallbackQuery):
     lang = get_user_lang(callback.from_user.id)
@@ -281,14 +377,24 @@ async def buy_story_callback(client: Client, callback: CallbackQuery):
         id=story['id']
     )
 
-    await callback.message.edit_text(
-        msg_text,
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(t["btn_cancel"], callback_data=f"story_{story_id}")]
-        ])
-    )
+    if callback.message.photo:
+        await callback.message.delete()
+        await app.send_message(
+            callback.message.chat.id,
+            msg_text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(t["btn_cancel"], callback_data=f"story_{story_id}")]
+            ])
+        )
+    else:
+        await callback.message.edit_text(
+            msg_text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(t["btn_cancel"], callback_data=f"story_{story_id}")]
+            ])
+        )
 
-# --- 7. UTR SUBMISSION & LOG CHANNEL ---
+# --- 8. UTR SUBMISSION & LOG CHANNEL ---
 @app.on_message(filters.command("utr") & filters.private)
 async def handle_utr_submit(client: Client, message: Message):
     user = message.from_user
@@ -345,7 +451,7 @@ async def handle_utr_submit(client: Client, message: Message):
     ])
     await client.send_message(LOG_CHANNEL_ID, log_msg, reply_markup=keyboard)
 
-# --- 8. ADMIN APPROVAL HANDLER ---
+# --- 9. ADMIN APPROVAL HANDLER ---
 @app.on_callback_query(filters.regex(r"^(appr|rej)_(.+)"))
 async def handle_order_approval(client: Client, callback: CallbackQuery):
     action = callback.matches[0].group(1)
@@ -374,7 +480,7 @@ async def handle_order_approval(client: Client, callback: CallbackQuery):
         await callback.message.edit_text(f"{callback.message.text}\n\n❌ **STATUS: REJECTED**")
         await callback.answer("Rejected!")
 
-# --- 9. MY LIBRARY ---
+# --- 10. MY LIBRARY ---
 @app.on_callback_query(filters.regex(r"^my_library$"))
 async def my_library(client: Client, callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -395,10 +501,11 @@ async def my_library(client: Client, callback: CallbackQuery):
 
     buttons.append([InlineKeyboardButton(t["btn_back_cat"], callback_data="catalog_1")])
 
-    await callback.message.edit_text(
-        t["my_lib_title"],
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+    if callback.message.photo:
+        await callback.message.delete()
+        await app.send_message(user_id, t["my_lib_title"], reply_markup=InlineKeyboardMarkup(buttons))
+    else:
+        await callback.message.edit_text(t["my_lib_title"], reply_markup=InlineKeyboardMarkup(buttons))
 
 # --- START BOT AND HTTP SERVER ---
 if __name__ == "__main__":
